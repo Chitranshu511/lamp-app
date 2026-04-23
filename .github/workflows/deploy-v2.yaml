@@ -88,6 +88,6 @@ jobs:
         if: always()
         run: |
           aws ec2 revoke-security-group-ingress \
-            --group-name ${{ secrets.AWS_SG_NAME }} \
+            --group-id ${{ secrets.AWS_SG_NAME }} \
             --protocol tcp --port $SSH_PORT \
             --cidr ${{ steps.ip.outputs.ipv4 }}/32
