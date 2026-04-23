@@ -1,0 +1,79 @@
+name: Deploy LAMP via SSH (v2 - Controlled)
+
+on:
+  push:
+    branches:
+      - main
+      - feature/lamp-deploy-v2   # allow testing in your feature branch
+  workflow_dispatch:             # manual trigger from GitHub UI
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-lamp
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      DEPLOY_PATH: /var/www/html
+      SSH_PORT: "22"
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v3
+
+      - name: 🌐 Get GitHub runner public IP
+        id: ip
+        uses: haythem/public-ip@v1.2
+
+      - name: 🔐 Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE }}
+          aws-region: ap-south-1
+          role-session-name: github-ssh-deploy
+
+      - name: 🛡️ Allow SSH from runner IP (temporary)
+        run: |
+          aws ec2 authorize-security-group-ingress \
+            --group-name "${{ secrets.AWS_SG_NAME }}" \
+            --protocol tcp --port $SSH_PORT \
+            --cidr ${{ steps.ip.outputs.ipv4 }}/32
+
+      - name: 🔑 Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p $SSH_PORT -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: 🚀 Deploy via rsync
+        run: |
+          rsync -avz --delete \
+            --exclude ".git" \
+            --exclude ".github" \
+            -e "ssh -i ~/.ssh/id_rsa -p $SSH_PORT" \
+            ./ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:${DEPLOY_PATH}/
+
+      - name: 🔧 Fix permissions & restart Apache
+        run: |
+          ssh -i ~/.ssh/id_rsa -p $SSH_PORT ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+            set -e
+            sudo chown -R www-data:www-data /var/www/html
+            sudo chmod -R 755 /var/www/html
+            sudo systemctl restart apache2
+            echo "Deployment completed successfully"
+          EOF
+
+      - name: 🔒 Revoke SSH access (always)
+        if: always()
+        run: |
+          aws ec2 revoke-security-group-ingress \
+            --group-name "${{ secrets.AWS_SG_NAME }}" \
+            --protocol tcp --port $SSH_PORT \
+            --cidr ${{ steps.ip.outputs.ipv4 }}/32
