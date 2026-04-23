@@ -1,11 +1,10 @@
-name: Deploy LAMP via SSM + Self Hosted Runner
+name: Deploy LAMP via SSM (No SSH)
 
 on:
   push:
     branches:
       - main
-      - feature/lamp-deploy-v2 
-      
+
 permissions:
   id-token: write
   contents: read
@@ -26,29 +25,34 @@ jobs:
 
       - name: Deploy via SSM
         run: |
+          echo "🚀 Sending deployment command via SSM..."
+
           COMMAND_ID=$(aws ssm send-command \
-            --instance-ids ${{ secrets.EC2_INSTANCE_ID }} \
+            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
-            --parameters commands="[
-              \"set -e\",
-              \"echo Starting deployment\",
-              \"cd /var/www/html\",
-              \"sudo rm -rf *\",
-              \"git clone https://github.com/${{ github.repository }} .\",
-              \"sudo chown -R www-data:www-data /var/www/html\",
-              \"sudo chmod -R 755 /var/www/html\",
-              \"sudo systemctl restart apache2\",
-              \"echo Deployment successful\"
-            ]" \
+            --comment "LAMP Deployment" \
+            --parameters commands='[
+              "set -e",
+              "echo Starting deployment",
+              "cd /var/www/html",
+              "sudo rm -rf *",
+              "git clone https://github.com/'"${{ github.repository }}"' .",
+              "sudo chown -R www-data:www-data /var/www/html",
+              "sudo chmod -R 755 /var/www/html",
+              "sudo systemctl restart apache2",
+              "echo Deployment completed successfully"
+            ]' \
             --query "Command.CommandId" \
             --output text)
 
-          echo "Command ID: $COMMAND_ID"
+          echo "📌 Command ID: $COMMAND_ID"
 
+          echo "⏳ Waiting for command to finish..."
           aws ssm wait command-executed \
-            --command-id $COMMAND_ID \
-            --instance-id ${{ secrets.EC2_INSTANCE_ID }}
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ secrets.EC2_INSTANCE_ID }}"
 
+          echo "📄 Fetching command output..."
           aws ssm get-command-invocation \
-            --command-id $COMMAND_ID \
-            --instance-id ${{ secrets.EC2_INSTANCE_ID }}
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ secrets.EC2_INSTANCE_ID }}"
