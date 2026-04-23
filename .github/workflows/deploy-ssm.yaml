@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      - feature/lamp-deploy-v2   # 👈 allow testing
+      - feature/lamp-deploy-v2
 
 permissions:
   id-token: write
@@ -18,7 +18,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Configure AWS Credentials (OIDC)
+      - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ secrets.AWS_ROLE }}
@@ -26,21 +26,19 @@ jobs:
 
       - name: Deploy via SSM
         run: |
-          echo "🚀 Starting deployment..."
-
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
             --parameters commands='[
               "set -e",
-              "echo Deploying from branch...",
+              "echo Deploying via SSM...",
               "cd /var/www/html",
               "sudo rm -rf *",
               "git clone https://github.com/'"${{ github.repository }}"' .",
               "sudo chown -R www-data:www-data /var/www/html",
               "sudo chmod -R 755 /var/www/html",
               "sudo systemctl restart apache2",
-              "echo Deployment done"
+              "echo Deployment complete"
             ]' \
             --query "Command.CommandId" \
             --output text)
