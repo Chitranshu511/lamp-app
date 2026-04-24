@@ -1,0 +1,89 @@
+name: Deploy LAMP App (Secure SSH)
+
+on:
+  push:
+    branches:
+      - feature/lamp-deploy-v2
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      AWS_REGION: ap-south-1
+      SECURITY_GROUP_ID: sg-0ff413db589e1b91a  # 🔥 Ensure this is correct
+      EC2_USER: ubuntu
+
+    steps:
+      # 1️⃣ Checkout code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2️⃣ Configure AWS via OIDC
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::947999370414:role/github-deploy-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 3️⃣ Get runner public IP
+      - name: Get Runner IP
+        run: |
+          IP=$(curl -s ifconfig.me)
+          echo "RUNNER_IP=$IP" >> $GITHUB_ENV
+          echo "Runner IP is $IP"
+
+      # 4️⃣ Allow runner IP in Security Group
+      - name: Whitelist Runner IP
+        run: |
+          aws ec2 authorize-security-group-ingress \
+            --group-id ${{ env.SECURITY_GROUP_ID }} \
+            --protocol tcp \
+            --port 22 \
+            --cidr ${{ env.RUNNER_IP }}/32
+
+      # 5️⃣ Setup SSH
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      # 6️⃣ Deploy LAMP application
+      - name: Deploy Application
+        run: |
+          ssh -i ~/.ssh/id_rsa ${{ env.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+            # Update system
+            sudo apt update -y
+
+            # Install LAMP (safe if already installed)
+            sudo apt install -y apache2 mysql-server php libapache2-mod-php php-mysql
+
+            # Start Apache
+            sudo systemctl enable apache2
+            sudo systemctl start apache2
+
+            # Clean old files
+            sudo rm -rf /var/www/html/*
+
+            # Copy app (Example: writing index.php)
+            echo "<?php phpinfo(); ?>" | sudo tee /var/www/html/index.php
+
+            # Set permissions
+            sudo chown -R www-data:www-data /var/www/html
+            sudo systemctl restart apache2
+          EOF
+
+      # 7️⃣ Remove runner IP (IMPORTANT 🔐)
+      - name: Remove Runner IP
+        if: always()
+        run: |
+          aws ec2 revoke-security-group-ingress \
+            --group-id ${{ env.SECURITY_GROUP_ID }} \
+            --protocol tcp \
+            --port 22 \
+            --cidr ${{ env.RUNNER_IP }}/32

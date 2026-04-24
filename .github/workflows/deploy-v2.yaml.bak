@@ -1,0 +1,93 @@
+name: Deploy LAMP via SSH (v2 - Production Style)
+
+on:
+  push:
+    branches:
+      - main
+      - feature/lamp-deploy-v2   # optional for testing
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      DEPLOY_PATH: /var/www/html
+      SSH_PORT: "22"
+
+    steps:
+      # 1. Checkout Code
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      # 2. Get Public IP of GitHub Runner
+      - name: Get GitHub Actions Public IP
+        id: ip
+        uses: haythem/public-ip@v1.2
+
+      # 3. Configure AWS (OIDC)
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE }}
+          role-session-name: github-lamp-deploy
+          aws-region: ap-south-1
+    
+      - name: Test AWS Connection
+        run: aws sts get-caller-identity          
+
+      # 4. Allow SSH temporarily
+      - name: Allow SSH Access
+        run: |
+          aws ec2 authorize-security-group-ingress \
+            --group-id ${{ secrets.AWS_SG_NAME }} \
+            --protocol tcp --port $SSH_PORT \
+            --cidr ${{ steps.ip.outputs.ipv4 }}/32
+
+      # 5. Setup SSH Key
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      # 6. Deploy code using rsync (better than scp)
+      - name: Deploy Code via rsync
+        run: |
+          rsync -avz --delete \
+            --exclude ".git" \
+            --exclude ".github" \
+            -e "ssh -i ~/.ssh/id_rsa -p $SSH_PORT" \
+            ./ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:${DEPLOY_PATH}/
+
+      # 7. Execute commands on EC2 (Apache restart)
+      - name: SSH into EC2 and finalize deployment
+        run: |
+          ssh -i ~/.ssh/id_rsa -p $SSH_PORT ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+            set -e
+
+            echo " Moving to web directory"
+            cd /var/www/html
+
+            echo "Fixing permissions"
+            sudo chown -R www-data:www-data /var/www/html
+            sudo chmod -R 755 /var/www/html
+
+            echo "🔄 Restarting Apache"
+            sudo systemctl restart apache2
+
+            echo "LAMP Deployment Successful"
+          EOF
+
+      # 8. Remove SSH access (VERY IMPORTANT)
+      - name: Revoke SSH Access
+        if: always()
+        run: |
+          aws ec2 revoke-security-group-ingress \
+            --group-id ${{ secrets.AWS_SG_NAME }} \
+            --protocol tcp --port $SSH_PORT \
+            --cidr ${{ steps.ip.outputs.ipv4 }}/32
